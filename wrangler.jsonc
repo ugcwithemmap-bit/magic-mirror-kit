@@ -1,0 +1,9 @@
+{
+  "name": "magic-mirror",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  // Optional. Only needed if you turn on Enable authentication in ElevenLabs
+  // and want tokens minted server side. Add ELEVENLABS_API_KEY as a secret.
+  "vars": { "AGENT_ID": "paste_your_elevenlabs_agent_id_here" }
+}

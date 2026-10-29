@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mirror">
+<title>Magic Mirror</title>
+<style>
+  :root { --reveal:0; --speak:0; --flicker:1; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body {
+    width:100%; height:100%; background:#000; overflow:hidden; position:fixed;
+    touch-action:none; overscroll-behavior:none;
+    font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
+    color:#6d7f88; -webkit-user-select:none; user-select:none;
+  }
+
+  /* The whole composite fades up from nothing and flickers with the voice. */
+  #composite {
+    position:fixed; inset:0;
+    opacity: calc(var(--reveal) * var(--flicker));
+    transition: opacity 2400ms cubic-bezier(.4,0,.2,1);
+  }
+  #composite.fast { transition-duration:260ms; }
+
+  /* Slow drift and breath, so the mask is never completely still. */
+  #drift {
+    position:absolute; inset:0;
+    animation: breathe 11s ease-in-out infinite, sway 23s ease-in-out infinite;
+    transform-origin:50% 44%;
+  }
+  @keyframes breathe { 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.017) } }
+  @keyframes sway {
+    0%,100% { translate:0 0 }
+    33%     { translate:-0.5% 0.7% }
+    66%     { translate:0.6% -0.5% }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #drift { animation:none }
+  }
+
+  /* A halo behind the mask. Pulses slowly at rest, brightens when speaking. */
+  #halo {
+    position:absolute; left:50%; top:44%; width:92vmin; height:92vmin;
+    transform:translate(-50%,-50%);
+    background: radial-gradient(circle, rgba(70,96,255,.30) 0%, rgba(40,60,190,.11) 38%, transparent 68%);
+    opacity: calc(.55 + var(--speak) * .45);
+    animation: haloPulse 7s ease-in-out infinite;
+    pointer-events:none;
+  }
+  @keyframes haloPulse { 0%,100%{ filter:blur(0px) } 50%{ filter:blur(5px) } }
+
+  /* The two mouth states. Both sit on pure black, and the page is pure black,
+     so a plain opacity dissolve needs no blend mode and leaves no edge.
+     Screen blending would be wrong here: the open mouth's dark hollow has to
+     cover the closed lips underneath, and screen only ever brightens. */
+  .mask {
+    position:absolute; inset:0; width:100%; height:100%;
+    object-fit:contain; pointer-events:none;
+  }
+  #ajar, #half, #talk { opacity:0; will-change:opacity; }
+
+  /* Turns "a face" into "a face in a mirror". */
+  #vignette {
+    position:fixed; inset:0; pointer-events:none;
+    background: radial-gradient(ellipse 66% 58% at 50% 46%, transparent 26%, rgba(0,0,0,.6) 64%, #000 88%);
+  }
+  #edges { position:fixed; inset:0; pointer-events:none;
+    box-shadow: inset 0 0 150px 80px #000, inset 0 0 44px 14px #000; }
+
+  /* Splash. One tap unlocks audio, the microphone and the wake lock on Safari. */
+  #splash {
+    position:fixed; inset:0; z-index:50; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:26px; padding:44px;
+    background:#000; text-align:center;
+  }
+  #splash h1 { font-weight:300; font-size:clamp(19px,3vw,28px); letter-spacing:.16em;
+    text-transform:uppercase; color:#8ea0a8; }
+  #splash p { font-size:15px; line-height:1.75; max-width:44ch; color:#4e5d64; }
+  #wake { margin-top:6px; padding:18px 44px; font-size:15px; letter-spacing:.12em;
+    text-transform:uppercase; background:transparent; color:#9fb3bb;
+    border:1px solid #2b3539; border-radius:2px; }
+  #wake:active { background:#0e1416; }
+
+  /* Operator panel. Three finger tap, or the D key. */
+  #ops { position:fixed; left:0; right:0; bottom:0; z-index:40; display:none;
+    background:rgba(0,0,0,.93); border-top:1px solid #192023; padding:14px 16px;
+    font-size:12px; line-height:1.9; font-variant-numeric:tabular-nums; }
+  #ops.on { display:block; }
+  #ops b { color:#9fb3bb; font-weight:500; }
+  #ops .row { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
+  #ops button { background:#0f1618; color:#8ea0a8; border:1px solid #233035;
+    padding:9px 15px; border-radius:2px; font-size:12px; }
+  #meter { width:120px; height:5px; background:#141b1e; border-radius:3px; overflow:hidden; }
+  #meterFill { height:100%; width:0%; background:#5a7fe0; }
+
+  /* Visible whenever the mirror is not actually listening, so a failure is
+     never silent. It hides itself the moment the session is live. */
+  #status {
+    position:fixed; left:0; right:0; bottom:26px; z-index:30; text-align:center;
+    font-size:13px; letter-spacing:.06em; color:#55646b; padding:0 28px;
+    pointer-events:none; transition:opacity 400ms;
+  }
+  #status.hide { opacity:0; }
+  #status .err { color:#c0703f; }
+</style>
+</head>
+<body>
+
+<div id="composite">
+  <div id="drift">
+    <div id="halo"></div>
+    <!-- Stacked closed to wide. Each covers the one beneath at full opacity. -->
+    <img id="idle" class="mask" alt="" src="assets/mask-closed.png">
+    <img id="ajar" class="mask" alt="" src="assets/mask-ajar.png">
+    <img id="half" class="mask" alt="" src="assets/mask-half.png">
+    <img id="talk" class="mask" alt="" src="assets/mask-talk.png">
+  </div>
+</div>
+<div id="vignette"></div>
+<div id="edges"></div>
+<div id="status"></div>
+
+<div id="splash">
+  <h1>Magic Mirror</h1>
+  <p>Tap once to wake the glass. Safari will not allow sound or the microphone
+     without it.</p>
+  <button id="wake">Wake the mirror</button>
+  <p class="hint" id="standaloneHint" style="font-size:13px;color:#3b464b"></p>
+  <p style="font-size:13px;color:#3b464b">After that it listens on its own, all
+     evening. Put the iPad behind the frame and walk away.</p>
+</div>
+
+<div id="ops">
+  <div class="row">
+    <span><b>State</b> <span data-k="st">dormant</span></span>
+    <span><b>Mouth</b></span><span id="meter"><span id="meterFill"></span></span>
+    <span><b>Agent</b> <span data-k="agent">not set</span></span>
+    <span><b>Screen lock</b> <span data-k="wake">off</span></span>
+    <span><b>Mode</b> <span data-k="mode">browser</span></span>
+    <span><b>Reconnects</b> <span data-k="reconnects">0</span></span>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button data-a="listen">Listen</button>
+    <button data-a="sleep">Sleep</button>
+    <button data-a="test">Test mouth</button>
+    <button data-a="setup">Set agent id</button>
+    <button data-a="hide">Hide</button>
+  </div>
+  <div class="row" style="margin-top:8px;color:#394449">
+    <span>It listens by itself once woken. Escape stops it, any key starts it again,
+          D toggles this panel.</span>
+  </div>
+</div>
+
+<!-- Your own agent id lives here. Copy config.example.js to config.js. -->
+<script src="config.js"></script>
+<script type="module">
+/* The mirror's own agent. Public, no authentication, so the id is all the
+   browser needs and no key ever reaches the iPad.
+
+   This used to prefer a value saved in localStorage, which meant a stale id
+   from an old agent silently shadowed the correct one and the only symptom was
+   a dead mirror. The baked-in id now wins. ?agent= is the one override, and it
+   is deliberately not persisted, so a reload always returns to a known state. */
+const DEFAULT_AGENT = (window.MIRROR_AGENT_ID || '').trim();
+const qs = new URLSearchParams(location.search);
+let AGENT_ID = (qs.get('agent') || '').trim() || DEFAULT_AGENT;
+try { localStorage.removeItem('mirror.agentId'); } catch {}
+
+const $ = s => document.querySelector(s);
+const ops = $('#ops'), root = document.documentElement;
+const setOps = (k,v) => { const el = ops.querySelector(`[data-k="${k}"]`); if (el) el.textContent = v; };
+
+let state = 'dormant', conversation = null, audioCtx = null, envelope = 0;
+/* The mirror is always listening once woken. `wantOn` is the intent, so an
+   unexpected drop reconnects itself but Emma pressing Escape does not. */
+let wantOn = false, reconnectTimer = null, reconnects = 0;
+
+let lastError = '';
+const HUMAN = {
+  connecting:   'Waking the glass...',
+  listening:    '',                       // live, say nothing
+  speaking:     '',
+  reconnecting: 'Lost the connection. Trying again...',
+  idle:         'Idle. Press any key to start listening.',
+  dormant:      'Stopped. Press any key to start listening.'
+};
+
+function setState(s) {
+  state = s; setOps('st', s);
+  // Present whenever it is awake, dark only when deliberately stopped.
+  root.style.setProperty('--reveal', s === 'dormant' ? 0 : 1);
+
+  const live = (s === 'listening' || s === 'speaking');
+  const el = $('#status');
+  if (!el) return;
+  el.classList.toggle('hide', live && !lastError);
+  if (!live || lastError) {
+    const msg = HUMAN[s] ?? s;
+    el.innerHTML = msg + (lastError
+      ? `<br><span class="err">${lastError}</span>` : '');
+  }
+}
+
+function reportError(e) {
+  const raw = e?.message || String(e || '');
+  // Translate the handful that actually happen into something actionable.
+  if (/not allowed|permission denied/i.test(raw))
+    lastError = 'Microphone blocked. Click the padlock in the address bar and allow it.';
+  else if (/401|403|unauthor|forbidden/i.test(raw))
+    lastError = 'ElevenLabs refused the connection: ' + raw;
+  else if (/network|failed to fetch|timeout/i.test(raw))
+    lastError = 'Network problem reaching ElevenLabs: ' + raw;
+  else lastError = raw || 'Unknown error';
+  setOps('st', 'error');
+  setState(state);
+}
+
+/* Four mouth states, stacked closed to wide. Each one fully covers the one
+   below at full opacity, because they are identical images apart from the
+   mouth, so crossfading only ever shows two at a time. */
+const MOUTHS = ['#ajar', '#half', '#talk'];   // over the closed base
+
+/* Why the mouth used to stick open for a whole sentence: these are FFT
+   magnitudes, and during continuous speech they sit high and barely dip, so a
+   fixed threshold saturates at 1 and stays there. Normalising against a
+   decaying recent peak exposes the syllable-rate movement that is already in
+   the signal but squeezed into the top of the range. */
+let peak = 0.02;
+
+function pump(level) {
+  /* The floor matters: without it, peak decays towards zero in a pause and the
+     next faint sound divides by almost nothing, so the mouth flies wide open
+     on a cough from across the room. */
+  peak = Math.max(level, peak * 0.992, 0.035);
+  const norm = level / peak;
+  // Expand the top half of the range, which is where speech actually modulates.
+  let target = Math.min(1, Math.max(0, (norm - 0.42) / 0.5));
+  if (level < 0.012) target = 0;              // genuine silence closes it
+
+  // Fast open, quicker close than before so it shuts between syllables.
+  envelope += (target - envelope) * (target > envelope ? 0.6 : 0.24);
+  const e = envelope;
+
+  // Walk the stack: everything below the current point is solid, the next one
+  // fades in, everything above is hidden.
+  const pos = e * MOUTHS.length;
+  MOUTHS.forEach((sel, i) => {
+    const o = Math.min(1, Math.max(0, pos - i));
+    const el = $(sel); if (el) el.style.opacity = o.toFixed(3);
+  });
+
+  root.style.setProperty('--speak', e.toFixed(3));
+  root.style.setProperty('--flicker', (1 - e * 0.04 * Math.random()).toFixed(3));
+  $('#meterFill').style.width = (e * 100).toFixed(0) + '%';
+}
+
+function envelopeLoop(getBytes) {
+  (function tick(){
+    if (!conversation) { envelope = 0; pump(0); return; }
+    requestAnimationFrame(tick);
+    let level = 0;
+    try {
+      const b = getBytes();
+      if (b && b.length) {
+        let s = 0; for (let i=0;i<b.length;i++) s += b[i]*b[i];
+        level = Math.sqrt(s / b.length) / 255;
+      }
+    } catch {}
+    pump(level);
+  })();
+}
+
+let Conversation = null;
+async function sdk() {
+  if (!Conversation) {
+    const m = await import('https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.32.0/+esm');
+    Conversation = m.Conversation;
+  }
+  return Conversation;
+}
+
+async function listen() {
+  wantOn = true;
+  if (conversation) return;
+  if (!AGENT_ID) { setState('idle'); showOps(true); setOps('agent','NOT SET'); return; }
+  setState('connecting');
+  try {
+    const C = await sdk();
+    conversation = await C.startSession({
+      agentId: AGENT_ID,
+      connectionType: 'webrtc',
+      onConnect:    () => { reconnects = 0; lastError = ''; setState('listening'); },
+      onDisconnect: () => { conversation = null; envelope = 0; pump(0); scheduleReconnect(); },
+      onError:      e  => reportError(e),
+      onModeChange: m  => setState(m?.mode === 'speaking' ? 'speaking' : 'listening')
+    });
+    envelopeLoop(() => conversation?.getOutputByteFrequencyData?.());
+  } catch (e) {
+    reportError(e);
+    scheduleReconnect();
+  }
+}
+
+/* The session has a two hour ceiling and a network can hiccup. An unattended
+   mirror that goes deaf at 9pm and stays deaf is the failure that ruins the
+   night, so it always climbs back by itself. */
+function scheduleReconnect() {
+  if (!wantOn) { setState('dormant'); return; }
+  clearTimeout(reconnectTimer);
+  /* Every attempt re-requests the microphone, and on a file:// page Chrome
+     never remembers the grant, so an unbounded loop becomes a permission
+     prompt every few seconds. Give up loudly rather than nagging forever. */
+  if (reconnects >= 8) {
+    wantOn = false;
+    setState('stopped: could not connect');
+    showOps(true);
+    return;
+  }
+  setState('reconnecting');
+  const wait = Math.min(1000 * Math.pow(1.6, reconnects++), 15000);
+  setOps('reconnects', reconnects);
+  reconnectTimer = setTimeout(listen, wait);
+}
+
+/* A page served from file:// cannot keep a microphone grant and cannot be put
+   behind the glass. Say so rather than letting it fail mysteriously. */
+if (location.protocol === 'file:') {
+  addEventListener('DOMContentLoaded', () => {
+    const p = document.createElement('p');
+    p.style.cssText = 'color:#c98b4b;font-size:14px;max-width:44ch;line-height:1.7';
+    p.textContent = 'This is the local file. Chrome will ask for the microphone '
+      + 'over and over, because it cannot remember permission for a file. '
+      + 'Serve it over https instead, even a local dev server.';
+    document.querySelector('#splash')?.prepend(p);
+  });
+}
+
+async function sleep() {
+  wantOn = false;
+  clearTimeout(reconnectTimer);
+  try { await conversation?.endSession?.(); } catch {}
+  conversation = null; envelope = 0; pump(0);
+  setState('dormant');
+}
+
+/* Drives the mouth from a synthetic envelope, so the whole visual chain can be
+   checked before the agent id exists. */
+function testMouth() {
+  setState('speaking'); conversation = { test:true };
+  let t = 0;
+  (function run(){
+    if (!conversation?.test) return;
+    requestAnimationFrame(run);
+    t += 0.045;
+    // Two overlapping rates plus a slow swell, so it exercises all four mouths
+    // rather than bouncing between shut and wide.
+    const syllable = Math.max(0, Math.sin(t * 5.3)) * 0.7
+                   + Math.max(0, Math.sin(t * 3.1 + 1.2)) * 0.3;
+    const phrase   = 0.45 + 0.55 * Math.abs(Math.sin(t * 0.45));
+    pump(syllable * phrase * 0.14);
+    if (t > 16) { conversation = null; envelope = 0; pump(0); setState('idle'); }
+  })();
+}
+
+addEventListener('keydown', e => {
+  e.preventDefault();
+  if (e.key === 'Escape') return sleep();
+  if (e.key === 'd' || e.key === 'D') return showOps(!ops.classList.contains('on'));
+  if (state === 'dormant' || state === 'idle') listen();
+}, { passive:false });
+
+addEventListener('touchstart', e => { if (e.touches.length >= 3) showOps(true); }, { passive:true });
+function showOps(on){ ops.classList.toggle('on', on); }
+
+ops.addEventListener('click', e => {
+  const a = e.target.dataset.a;
+  if (a === 'listen') listen();
+  if (a === 'sleep')  sleep();
+  if (a === 'test')   testMouth();
+  if (a === 'hide')   showOps(false);
+  if (a === 'setup') {
+    // Not persisted on purpose. A reload always goes back to the known-good id.
+    const v = prompt('ElevenLabs agent id, for this session only', AGENT_ID);
+    if (v) { AGENT_ID = v.trim(); setOps('agent', AGENT_ID); }
+  }
+});
+
+/* An iPad that sleeps is a dead mirror. iOS drops the lock whenever the page
+   backgrounds, so take it again every time we come back. */
+let wakeLock = null;
+async function holdScreen() {
+  try {
+    wakeLock = await navigator.wakeLock?.request('screen');
+    setOps('wake', wakeLock ? 'held' : 'unsupported');
+    wakeLock?.addEventListener('release', () => { wakeLock = null; setOps('wake','released'); });
+  } catch { setOps('wake','refused'); }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !wakeLock) holdScreen();
+});
+
+const standalone = window.navigator.standalone === true
+  || matchMedia('(display-mode: standalone)').matches;
+setOps('mode', standalone ? 'standalone' : 'browser');
+if (!standalone) $('#standaloneHint').textContent =
+  'For no Safari bars: Share, Add to Home Screen, then launch it from that icon.';
+
+$('#wake').addEventListener('click', async () => {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume().catch(()=>{});
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:false }
+    });
+    s.getTracks().forEach(t => t.stop());
+  } catch {}
+  await holdScreen();
+  document.documentElement.requestFullscreen?.().catch(()=>{});
+  $('#splash').remove();
+  if (!AGENT_ID) { showOps(true); setState('idle'); return; }
+  // One tap and it is live. No second trigger, no clicker, no hardware.
+  listen();
+});
+
+setOps("agent", AGENT_ID);
+setState('dormant');
+</script>
+</body>
+</html>
