@@ -177,7 +177,7 @@ const setOps = (k,v) => { const el = ops.querySelector(`[data-k="${k}"]`); if (e
 
 let state = 'dormant', conversation = null, audioCtx = null, envelope = 0;
 /* The mirror is always listening once woken. `wantOn` is the intent, so an
-   unexpected drop reconnects itself but Emma pressing Escape does not. */
+   unexpected drop reconnects itself but pressing Escape does not. */
 let wantOn = false, reconnectTimer = null, reconnects = 0;
 
 let lastError = '';
