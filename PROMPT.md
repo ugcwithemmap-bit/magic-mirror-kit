@@ -17,7 +17,7 @@ Everything you need is in this repo, including the mask images and the exact age
 config. Clone it and work from it rather than building from scratch, because the
 fiddly parts are already solved in there:
 
-    https://github.com/OWNER/magic-mirror-kit
+    https://github.com/ugcwithemmap-bit/magic-mirror-kit
 
 Read README.md first. It has the whole design and, more usefully, the list of things
 that fail silently. Please actually follow it rather than reinventing it.

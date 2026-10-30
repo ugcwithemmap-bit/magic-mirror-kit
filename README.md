@@ -55,6 +55,12 @@ otherwise ruin your evening. See [The three settings](#the-three-settings-that-d
 
 Then **Publish**, and copy the agent id from the **...** menu.
 
+**If the voice does not come through:** the config asks for *Zane, Deep, Captivating and
+Dramatic*, which lives in the ElevenLabs Voice Library rather than in your account. If the agent
+loads without it, open **Voices**, search the library for **Zane**, click **Use**, then pick it on
+the agent. Twenty seconds, and it costs nothing. Library voices bill whoever is speaking, so using
+this one costs us nothing and earns us nothing.
+
 ### 2. Point the page at your agent
 
 ```bash
